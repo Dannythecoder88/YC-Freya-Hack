@@ -68,7 +68,7 @@ PLATFORM REFERENCE (the kit's documentation):
 {lessons}
 
 COMPACT OUTPUT FORMAT (required, to keep the answer short): put every tool definition ONCE in a top-level object
-"tool_library" ({"<tool name>": <full tool object as the platform expects, with type, config, function, hooks>}).
+"tool_library" ({{"<tool name>": <full tool object as the platform expects, with type, config, function, hooks>}}).
 In a conversation node, "tools" is a list of tool NAMES from the library; in an api_request node, "pre_actions" may
 also be a list of names. The builder expands names into full copies. No layout fields, short hooks, short prompts.
 Output: first DESIGN NOTES (at most 25 lines), then the workflow JSON in one ```json block (initial_node, system_prompt,

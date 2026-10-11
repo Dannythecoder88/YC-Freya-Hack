@@ -516,6 +516,9 @@ try:
         if why:
             d['what_to_do_next'] = 'NOT RECORDED: the bank rules do not allow it, because ' + why + '. Nothing was recorded. Do not say it was recorded. Apply the rules: offer an allowed date or amount instead and read it back again.'
             vars['x_blocked'] = ''
+        elif _failed(result, d) and re.search(r'already', str(d.get('error') or d.get('message') or d.get('raw') or ''), re.I):
+            vars['x_recorded_' + pid] = 'yes'
+            d['what_to_do_next'] = 'The bank already holds a promise for ' + pid + ' from earlier, so it is already on record. Do not call create_promise again for ' + pid + '. ' + (CFG.get('ok_text') or '')
         elif _failed(result, d):
             k = 'x_fail_' + pid
             try:

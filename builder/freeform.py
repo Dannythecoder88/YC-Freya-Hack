@@ -227,8 +227,12 @@ def chat_test(tr, freya, workflow_id, variables, scenario, max_turns=14):
         if r.get("ended") or r.get("callEnded") or not agent.strip():
             break
         convo = "\n".join(lines)
-        nxt = llm.ask(tr, "play a test customer (one turn)", CUSTOMER_SYSTEM,
-                      f"SCENARIO:\n{scenario}\n\nCONVERSATION SO FAR:\n{convo}\n\nYour next message:", effort="low", max_tokens=2000, limit_s=90)
+        try:
+            nxt = llm.ask(tr, "play a test customer (one turn)", CUSTOMER_SYSTEM,
+                          f"SCENARIO:\n{scenario}\n\nCONVERSATION SO FAR:\n{convo}\n\nYour next message:", effort="low", max_tokens=2000, limit_s=90)
+        except Exception as e:
+            lines.append(f"(test customer could not continue: {str(e)[:120]})")
+            break
         nxt = nxt.strip()
         if "[END]" in nxt:
             lines.append(f"CUSTOMER: {nxt.replace('[END]', '').strip()}")
@@ -310,6 +314,14 @@ def build_freeform(tr, freya, slot, texts, attachments, openapi, mock_url, deadl
     except Exception as e:
         scs = []
         tr.log(f"could not write test scenarios: {e}")
+    try:
+        wf, saved = self_test(tr, freya, slot, wf, saved, scs, system, user, mock_url, call_vars, deadline_s)
+    except Exception as e:
+        tr.log(f"self-test stopped ({type(e).__name__}: {str(e)[:200]}); keeping the uploaded workflow")
+    return wf, saved
+
+
+def self_test(tr, freya, slot, wf, saved, scs, system, user, mock_url, call_vars, deadline_s):
     for rnd in range(2):
         if not scs or time.time() - tr.t0 > deadline_s - 420:
             break
@@ -325,7 +337,9 @@ def build_freeform(tr, freya, slot, texts, attachments, openapi, mock_url, deadl
                           "ALL_PASS if every call passed.", list(user) + [{"type": "text", "text": "\n\n=== WORKFLOW ===\n" + json.dumps(wf, ensure_ascii=False)[:60000] +
                           "\n\n=== TEST CALLS ===\n" + "\n\n".join(reports)}], effort="medium", limit_s=300)
         tr.log("TEST verdict:\n    " + "\n    ".join(verdict.strip().splitlines()[:25]))
-        if "ALL_PASS" in verdict or time.time() - tr.t0 > deadline_s - 420:
+        if "ALL_PASS" in verdict or time.time() - tr.t0 > deadline_s - 780:
+            if "ALL_PASS" not in verdict:
+                tr.log("no time left for a fix round within the 30-minute limit")
             break
         new = fix(tr, system, user, wf, "Test calls and review:\n" + verdict + "\n\n" + "\n\n".join(reports), "fix the workflow from the test calls")
         errs = lint(new, mock_url, call_vars)

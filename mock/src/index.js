@@ -1,46 +1,50 @@
-// Freya Bank statement services mock (Cloudflare Worker), written from the case's service contract and test customers.
-// Stateless: every answer is the exact stored response for (service, customer, card, requested week), HTTP status
-// included, with the stored delay when there is one.
+// Freya Bank statement services mock (Cloudflare Worker), written from the case's service contract
+// (sources/documents/2026-10-01-service-contract.md) and test-environment/test-customers.{md,json}.
+// Stateless: each answer is the exact stored response (status + body) for the request's data fields,
+// found the way test-customers.md says; unknown customer/card/week -> the service's 404 from contract section 4,
+// or a 400 INVALID_ARGUMENTS_ERROR where the service has no 404.
 import DATA from "./test-customers.json";
 
-// Exact paths from the integration document go here (path -> service). Until then any path whose letters spell a
-// service name (cards/list, cards.list, cardsList, /api/v1/cards-list, ...) resolves to it.
-const ROUTES = {};
 const SERVICES = ["cards.list", "cards.balance", "statement.week.get", "statement.week.decide", "statement.week.change", "contact.email.get", "statement.pdf.send"];
-const norm = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const NOT_FOUND = {   // contract section 4
+  "cards.list": [404, "FB_IVR_CHANNEL_102", "WARNING", "Müşteriye ait geçerli kart bilgisi bulunamadı."],
+  "cards.balance": [404, "FB_IVR_CHANNEL_120", "WARNING", "Kart bulunamadı."],
+  "statement.week.get": [404, "FB_IVR_CHANNEL_121", "WARNING", "Kart bulunamadı."],
+  "statement.pdf.send": [404, "FB_IVR_CHANNEL_107", "WARNING", "Pdf dokümanı bulunamadı"],
+};
+const norm = s => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 const BY_NORM = Object.fromEntries(SERVICES.map(s => [norm(s), s]));
-const CUSTOMERS = Object.fromEntries(DATA.customers.map(c => [String(c.customerNo), c]));
 
+// indexes: customer number -> customer; masked card number -> customer (per-card services carry only the card)
+const CUSTOMERS = {}, CARD_OWNER = {};
+for (const c of DATA.customers) {
+  CUSTOMERS[String(c.customerNo)] = c;
+  for (const [svc, v] of Object.entries(c.services)) if (v && !("http" in v)) for (const card of Object.keys(v)) CARD_OWNER[card] = c;
+}
+
+let seq = 0;
+const guid = () => (Date.now().toString(16) + (++seq).toString(16).padStart(6, "0") + "0".repeat(32)).slice(0, 32);
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json; charset=utf-8" } });
-const errorBody = (code, msg) => ({ result: { guid: crypto.randomUUID().replace(/-/g, ""), returnCode: code, messageText: msg, code, message: msg, type: "ERROR", details: { guid: null, rootCause: null, errorOrigin: "mock" } } });
+function error(status, code, type, msg) {
+  const g = guid();
+  return json({ result: { guid: g, returnCode: code, messageText: msg, code, message: msg, type, details: { guid: g, rootCause: type === "ERROR" ? "InvalidArguments" : "NotFound", errorOrigin: "ivr-gateway-test:ivr-channel-v0" } } }, status);
+}
+const invalid = msg => error(400, "INVALID_ARGUMENTS_ERROR", "ERROR", msg);
+const notFound = svc => NOT_FOUND[svc] ? error(...NOT_FOUND[svc]) : invalid("record not found");
 
 function serviceFor(path) {
-  if (ROUTES[path]) return ROUTES[path];
   const n = norm(path);
   for (const [k, s] of Object.entries(BY_NORM)) if (n.endsWith(k)) return s;
   return null;
 }
+const empty = v => v === undefined || v === null || String(v).trim() === "";
+const digits = v => String(v ?? "").replace(/\D/g, "");
 
-// find a value in the request under any of several spellings (top level or one level down)
-function pick(body, names) {
-  const want = names.map(norm);
-  const scan = obj => {
-    if (!obj || typeof obj !== "object") return undefined;
-    for (const [k, v] of Object.entries(obj)) if (want.includes(norm(k)) && v !== undefined && v !== null && v !== "") return v;
-    return undefined;
-  };
-  let v = scan(body);
-  if (v === undefined) for (const x of Object.values(body || {})) { v = scan(x); if (v !== undefined) break; }
-  return v;
-}
-
-function byCard(table, card) {
-  if (!table || card === undefined) return undefined;
-  const c = String(card).replace(/\s/g, "");
+function cardEntry(table, card) {
+  if (!table) return undefined;
+  const c = String(card).trim();
   if (table[c]) return table[c];
-  const last4 = c.replace(/\D/g, "").slice(-4);
-  const keys = Object.keys(table).filter(k => k.replace(/\D/g, "").slice(-4) === last4);
-  return keys.length === 1 ? table[keys[0]] : undefined;
+  return undefined;
 }
 
 export default {
@@ -48,28 +52,37 @@ export default {
     const url = new URL(req.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     if (path === "/" || path === "/health") return json({ ok: true, service: "Freya Bank statement services mock", customers: DATA.customers.length });
+    if (norm(path).endsWith("oauth2token")) return json({ access_token: "test-token", token_type: "Bearer", expires_in: 1800 });
+
     let body = {};
-    if (req.method !== "GET") { try { body = await req.json(); } catch { body = {}; } }
-    for (const [k, v] of url.searchParams) if (!(k in body)) body[k] = v;
+    try { body = await req.json(); } catch { body = {}; }
+    // contract envelope: { data: {...}, call: {...} }; also accept the fields at the top level
+    const d = (body && typeof body.data === "object" && body.data) ? { ...body, ...body.data } : (body || {});
 
-    const service = serviceFor(path);
-    if (!service) return json(errorBody("FB_IVR_CHANNEL_404", "Unknown service " + path), 404);
-    const custNo = pick(body, ["customerNo", "customerNumber", "customer_no", "customerId", "customer_id", "musteriNo"]);
-    const cust = CUSTOMERS[String(custNo ?? "").replace(/\D/g, "")];
-    if (!cust) return json(errorBody("FB_IVR_CHANNEL_102", "Müşteri bulunamadı."), 404);
+    const svc = serviceFor(path);
+    if (!svc) return error(404, "NOT_FOUND", "ERROR", "unknown service " + path);
 
-    let entry = cust.services[service];
-    if (entry && !("http" in entry)) {               // keyed by card (and maybe by requested week)
-      const card = pick(body, ["cardNumber", "card_number", "maskedCardNumber", "cardNo", "kartNo"]);
-      entry = byCard(entry, card);
-      if (entry && !("http" in entry)) {
-        const week = pick(body, ["newStatementWeek", "statementWeek", "week", "new_statement_week"]);
-        entry = entry[String(week ?? "").replace(/\D/g, "")];
+    let entry;
+    if (svc === "cards.list" || svc === "contact.email.get" || svc === "statement.pdf.send") {
+      if (empty(d.customerNo)) return invalid("customer number cannot be empty");
+      if (svc === "statement.pdf.send") {
+        for (const f of ["cardNumber", "currencyType", "statementDate", "emailAddress"])
+          if (empty(d[f])) return invalid(f + " cannot be empty");
+      }
+      const cust = CUSTOMERS[digits(d.customerNo)];
+      entry = cust ? cust.services[svc] : undefined;
+    } else {
+      if (empty(d.cardNumber)) return invalid("card number cannot be empty");
+      const owner = CARD_OWNER[String(d.cardNumber).trim()];
+      entry = owner ? cardEntry(owner.services[svc], d.cardNumber) : undefined;
+      if (entry && (svc === "statement.week.decide" || svc === "statement.week.change")) {
+        if (empty(d.newStatementWeek)) return invalid("newStatementWeek cannot be empty");
+        entry = entry[digits(d.newStatementWeek)];
       }
     }
-    if (!entry) return json(errorBody("FB_IVR_CHANNEL_400", "Geçersiz istek."), 400);
+    if (!entry || !("http" in entry)) return notFound(svc);
     const delay = entry.delaySeconds ?? entry.gecikmeSaniye;
     if (delay) await new Promise(r => setTimeout(r, Number(delay) * 1000));
-    return json(entry.response ?? entry.yanit ?? {}, entry.http || 200);
+    return json(entry.response ?? entry.yanit ?? {}, entry.http);
   },
 };

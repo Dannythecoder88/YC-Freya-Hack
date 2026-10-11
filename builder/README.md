@@ -1,20 +1,33 @@
 # The builder
 
-One command, a brief in, a phone agent on Freya out:
+One command, the bank's documents in, a phone agent on Freya out.
 
 ```bash
-pip install -r requirements.txt
-source env.sh        # FREYA_API_KEY, FREYA_API_URL, FREYA_BANK_TEAM_KEY, ANTHROPIC_API_KEY
-python3 builder/build.py <brief.md> <tool_api.json>            # e.g. briefs/hidden-1.md briefs/hidden-1.openapi.json
-python3 builder/build.py briefs/brief-a.md briefs/brief-b.md tools/openapi.json --practice B   # several briefs, plus practice test
+pip install -r requirements.txt                     # anthropic, pypdf, python-docx, openpyxl, pyyaml
+cp env.template .env                                # ANTHROPIC_API_KEY, FREYA_API_KEY, FREYA_API_URL, FREYA_BANK_TEAM_KEY
+python3 builder/doctor.py                           # checks keys and connectivity
+
+# final format: a case folder (Markdown, Word, PDF, Excel, images) and the URL of the bank mock
+python3 builder/build.py <case_folder> <mock_url> 2>&1 | tee traces/final.log
+
+# practice format: brief file(s) and the tool API
+python3 builder/build.py briefs/brief-a.md briefs/brief-b.md tools/openapi.json
 ```
 
 Output: the workflow on Freya (created once per slot, then updated in place), `submission/<slot>.workflow.json`
-(the export), `out/<slot>.spec.json` and `out/<slot>.workflow.json` (what was generated), and the trace
+(the export; slot `final` for a case folder), `out/<slot>.spec.json`, `out/<slot>.openapi.json`, and the trace
 `traces/<slot>-<time>.log` (start/end time, every model call with model and purpose, checks, what was created, tests).
+`sh final.sh <case_folder> <mock_url>` runs the build, commits the export and trace, and writes `submission.json`.
 
-Before a real run, check keys and connectivity: `python3 builder/doctor.py` (prints OK/FAIL per service).
-A fresh machine needs a `.env` made from `env.template`. Freya calls retry on 429/5xx with backoff.
+If the case folder has no machine-readable service contract, the builder asks Claude to write one (OpenAPI) from the
+documents. Contract endpoints may have any names: the spec maps each to a role (verify identity, get account, record
+promise, note, callback, transfer, close). All tool URLs point at `<mock_url>`, the only service the agent calls.
+
+## The bank mock (`mock/`)
+
+Not part of the builder. The rules ask each team to write a mock of the bank's services on Cloudflare Workers from
+the case's service contract and test customers; `mock/` is that mock (one Durable Object per customer).
+Deploy: `cd mock && npx wrangler deploy`. Health check: `GET <mock_url>/health`. Ledger: `GET <mock_url>/ledger/<customer_id>`.
 
 ## How it works
 

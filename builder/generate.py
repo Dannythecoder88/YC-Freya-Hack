@@ -141,10 +141,16 @@ def bullet(rules):
 
 # ---------------------------------------------------------------- the workflow
 def build(spec, openapi):
-    api = openapi_tools(openapi)
-    missing = [t for t in TOOL_NAMES if t not in api]
+    raw = openapi_tools(openapi)
+    tmap = spec.get("tool_map") or {}
+    api = {}
+    for role in TOOL_NAMES:
+        actual = tmap.get(role, role)
+        if actual and actual in raw:
+            api[role] = raw[actual]
+    missing = [t for t in ("verify_identity", "get_account", "create_promise", "close_call") if t not in api]
     if missing:
-        raise ValueError(f"tool API is missing {missing}")
+        raise ValueError(f"tool API has no endpoint for {missing} (tool_map={tmap}, endpoints={list(raw)})")
     call_vars = list(spec.get("call_variables") or ["customer_id", "first_name", "last_name", "title", "now"])
     ident = spec["identity"]
     acct = spec["account"]
@@ -207,19 +213,19 @@ def build(spec, openapi):
         "Then follow what_to_do_next in the result.", hooks=(pr_pre, pr_post))
 
     note_ok = "Note saved. Continue with the next step of the call."
-    t_note = make_tool(api, "add_note", spec, call_vars,
+    t_note = None if "add_note" not in api else make_tool(api, "add_note", spec, call_vars,
         "Record why ONE product ends without a promise. CALL it once per product that has no promise, as the rules say, before closing. "
         "product_id exactly as in the account facts.",
         hooks=(None, runtime.generic_post_hook(note_ok, "The note FAILED. Try once more.")))
 
     tq_pre = runtime._hook({"queue_param": queue_p}, "\ntry:\n    b = config.get('body') if isinstance(config, dict) else None\n    if isinstance(b, dict): vars['x_transfer_queue'] = str(b.get(CFG['queue_param']) or '')\nexcept Exception:\n    pass\n")
     tq_post = runtime._hook({"ok_field": "ok"}, "\ntry:\n    d = _data(result)\n    if d is not None:\n        if _failed(result, d):\n            d['what_to_do_next'] = 'The transfer FAILED. Tell the customer you could not transfer the call.'\n        else:\n            vars['x_transfer_done'] = str(vars.get('x_transfer_queue') or '')\n            d['what_to_do_next'] = 'Transferred.'\nexcept Exception:\n    pass\n")
-    t_transfer = make_tool(api, "transfer_to_agent", spec, call_vars,
+    t_transfer = None if "transfer_to_agent" not in api else make_tool(api, "transfer_to_agent", spec, call_vars,
         "Hand the call to a person in the right queue. CALL it only when a rule says to transfer. The call ends after it.",
         hooks=(tq_pre, tq_post))
 
     cb_post = runtime._hook({"ok_field": "ok"}, "\ntry:\n    d = _data(result)\n    if d is not None:\n        if _failed(result, d):\n            d['what_to_do_next'] = 'The callback was NOT booked. Do not say it was. Ask for another time inside the allowed window, or close as the rules say.'\n        else:\n            vars['x_callback_done'] = 'yes'\n            d['what_to_do_next'] = 'Callback booked.'\nexcept Exception:\n    pass\n")
-    t_callback = make_tool(api, "schedule_callback", spec, call_vars,
+    t_callback = None if "schedule_callback" not in api else make_tool(api, "schedule_callback", spec, call_vars,
         "Book a callback. CALL it only for a day and time inside the allowed callback window. date YYYY-MM-DD, time HH:MM (24 hour).",
         hooks=(None, cb_post))
 
@@ -240,8 +246,9 @@ def build(spec, openapi):
     money_rule = (f'Say every amount followed by "{cur}" (for example "250 {cur}"); never use another currency.' if cur
                   else "Say amounts as plain numbers (for example \"250\"); never add a currency name.")
     system_prompt = f"""You are {spec['meta']['agent_self_description']}, making an outbound phone call. Speak {lang} only.
+Everything you say must be in {lang}, even though these instructions and the account facts are written in English: translate dates, amounts and any wording from the facts into natural {lang}. Keep sentences that the rules quote in {lang} exactly as written.
 You are talking with a person on the phone. Write only the words you say: no lists, no markdown, no brackets, no stage directions.
-Keep every turn to one to three short sentences. Ask one question at a time. {money_rule} Say dates as weekday, day and month (for example "Friday 16 October").
+Keep every turn to one to three short sentences. Ask one question at a time. {money_rule} Say dates as weekday, day and month, in {lang}.
 The current date and time of this call is {{{{now}}}} ({{{{x_today_text}}}}). Use it for every date; never use your own clock.
 The person you must reach is {who}.
 
@@ -253,8 +260,8 @@ How you use tools:
 
 How people talk on the phone:
 - People often say one answer across two or more messages: a date as "9 September" and then "1990", digits as "46" and then "51", an amount as "four hundred" and then "and twenty". Keep every piece already said and combine the pieces in the order given. Never throw a piece away.
-- If what was said so far is incomplete, ask only for the missing part in a few words ("And the year?", "And the other two digits?"). Never ask them to repeat the whole answer and never say you need the full answer.
-- If a message stops in the middle of a sentence or a number, say only "Go on." and wait for the rest.
+- If what was said so far is incomplete, ask only for the missing part in a few words in {lang} (like "And the year?" or "And the other two digits?"). Never ask them to repeat the whole answer and never say you need the full answer.
+- If a message stops in the middle of a sentence or a number, say only a short "go on" in {lang} and wait for the rest.
 - If they correct themselves ("the 21st, sorry, I mean the 20th"), use the corrected value. Numbers and dates said in words count the same as digits.
 - If they talk about something unrelated, answer briefly and politely, then return to where you were.
 
@@ -315,7 +322,9 @@ HOW TO RECORD:
         {"variable": "x_closed", "operator": "equals", "operand": "yes"},
         {"variable": "close_call_success_count", "operator": "greater_than", "operand": 0}]})]
 
-    queues = spec.get("transfers") or {}
+    queues = (spec.get("transfers") or {}) if t_transfer else {}
+    def tools(*ts):
+        return [copy.deepcopy(t) for t in ts if t]
     transfer_trs = []
     for q in queues:
         transfer_trs.append(tr(f"close_transfer_{q}", f"Transferred to {q}", {"logic": "or", "conditions": [
@@ -340,16 +349,18 @@ HOW TO RECORD:
                              "someone_else: the person says they are someone else, a relative, that the customer is not there, that it is the wrong number, or that the customer has died. "
                              "unclear: anything else, for example a greeting, 'go ahead', 'who is this?' or a question.",
               "min_confidence": 0.6}]
-    nodes["greet"] = conv("greet", greet_task, [copy.deepcopy(t_close), copy.deepcopy(t_transfer)],
+    nodes["greet"] = conv("greet", greet_task, tools(t_close, t_transfer),
         [tr("identity", "The customer confirmed", cond_any(("x_party", "customer"))),
          tr("third_party", "Someone else answered", cond_any(("x_party", "someone_else")))] + transfer_trs + closes_tr,
         {"type": "tts", "text": spec["opening_line"]}, extraction=party, max_turns=12)
 
-    nodes["third_party"] = conv("third_party", third_task, [t_callback, copy.deepcopy(t_close)],
-        [tr("close_callback", "Callback booked", {"logic": "or", "conditions": [
+    cc = (spec.get("third_party") or {}).get("callback_close")
+    cb_trs = [tr("close_callback", "Callback booked", {"logic": "or", "conditions": [
             {"variable": "x_callback_done", "operator": "equals", "operand": "yes"},
             {"variable": "schedule_callback_response.data.ok", "operator": "equals", "operand": "true"},
-            {"variable": "schedule_callback_response.data.ok", "operator": "equals", "operand": "True"}]})] + closes_tr,
+            {"variable": "schedule_callback_response.data.ok", "operator": "equals", "operand": "True"}]})] if (t_callback and cc) else []
+    nodes["third_party"] = conv("third_party", third_task, tools(t_callback, t_close),
+        cb_trs + closes_tr,
         {"type": "llm"}, max_turns=20)
 
     id_line = (ident.get("intro_line", "").strip() + " " + first_q).strip()
@@ -357,7 +368,7 @@ HOW TO RECORD:
     allf = (ident.get("response") or {}).get("all_verified")
     if allf:
         verified_vars += [(f"verify_identity_response.data.{allf}", "true"), (f"verify_identity_response.data.{allf}", "True")]
-    nodes["identity"] = conv("identity", id_task, [t_verify, copy.deepcopy(t_close), copy.deepcopy(t_transfer)],
+    nodes["identity"] = conv("identity", id_task, tools(t_verify, t_close, t_transfer),
         [tr("load_account", "Identity verified", cond_any(*verified_vars)),
          tr("close_id_failed", "Identity check failed", cond_any(("x_id_state", "failed")))] + transfer_trs + closes_tr,
         {"type": "tts", "text": id_line}, max_turns=30)
@@ -371,7 +382,7 @@ HOW TO RECORD:
     }
     nodes["facts"] = code_node("facts", facts, "negotiate")
 
-    neg_tools = [t_promise] + ([t_note] if spec.get("uses_notes") else []) + [copy.deepcopy(t_transfer), copy.deepcopy(t_close)]
+    neg_tools = tools(t_promise, t_note if spec.get("uses_notes") else None, t_transfer, t_close)
     nodes["negotiate"] = conv("negotiate", neg_task, neg_tools, transfer_trs + closes_tr,
         {"type": "tts", "text": "{{x_negotiate_opening}}"}, max_turns=60)
 
@@ -396,8 +407,8 @@ HOW TO RECORD:
 
     fc = ident["failed_close"]
     nodes["close_id_failed"] = close_node("close_id_failed", fc["outcome"], fc.get("reason"), fc.get("farewell", ""))
-    cc = spec["third_party"]["callback_close"]
-    nodes["close_callback"] = close_node("close_callback", cc["outcome"], cc.get("reason"), cc.get("farewell", ""))
+    if cb_trs:
+        nodes["close_callback"] = close_node("close_callback", cc["outcome"], cc.get("reason"), cc.get("farewell", ""))
     for q, c in queues.items():
         nodes[f"close_transfer_{q}"] = close_node(f"close_transfer_{q}", c["outcome"], c.get("reason"), c.get("farewell", ""))
 

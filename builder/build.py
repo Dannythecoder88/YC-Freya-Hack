@@ -99,26 +99,52 @@ def main():
     ap.add_argument("--offline", action="store_true", help="do not touch Freya (development)")
     a = ap.parse_args()
 
-    briefs = [f for f in a.files if not f.endswith(".json")]
-    apis = [f for f in a.files if f.endswith(".json")]
-    if not briefs or len(apis) != 1:
-        sys.exit("give one or more brief files and exactly one tool API .json file")
-    slot = a.slot or pathlib.Path(briefs[-1]).stem
+    folder_mode = os.path.isdir(a.files[0])
+    if folder_mode:
+        # final format: build.py <case_folder> <mock_url>
+        case_dir = a.files[0]
+        mock_url = a.files[1].rstrip("/") if len(a.files) > 1 else ""
+        slot = a.slot or "final"
+    else:
+        briefs = [f for f in a.files if not f.endswith(".json")]
+        apis = [f for f in a.files if f.endswith(".json")]
+        if not briefs or len(apis) != 1:
+            sys.exit("usage: build.py <case_folder> <mock_url>   or   build.py <brief.md>... <tool_api.json>")
+        slot = a.slot or pathlib.Path(briefs[-1]).stem
     tr = Trace(slot)
-    tr.log(f"BUILD START slot={slot} briefs={briefs} tool_api={apis[0]} builder_model={llm.MODEL}")
+    tr.log(f"BUILD START slot={slot} input={a.files} builder_model={llm.MODEL}")
     status = "failed"
     try:
-        openapi_text = pathlib.Path(apis[0]).read_text()
-        openapi = json.loads(openapi_text)
-        brief_texts = [(pathlib.Path(b).name, pathlib.Path(b).read_text()) for b in briefs]
-        tr.log(f"read {len(brief_texts)} brief(s), {sum(len(t) for _, t in brief_texts)} chars; tool API with {len(openapi.get('paths', {}))} paths")
+        attachments = []
+        if folder_mode:
+            import docs
+            tr.log(f"reading case folder {case_dir}")
+            brief_texts, attachments, openapi = docs.load_case(case_dir, log=tr.log)
+            if openapi is None:
+                tr.log("no machine-readable service contract in the folder: asking Claude to write it as OpenAPI from the documents")
+                ctext = llm.ask(tr, "turn the bank's service contract into an OpenAPI 3 JSON file", CONTRACT_SYSTEM,
+                                attachments + [{"type": "text", "text": docs.as_prompt(brief_texts)}], effort="medium", limit_s=420)
+                openapi = extract.parse_json(ctext)
+                if not docs.is_openapi(openapi):
+                    raise RuntimeError("could not build an OpenAPI contract from the documents")
+            if mock_url:
+                openapi["servers"] = [{"url": mock_url}]
+                tr.log(f"tools will call the mock at {mock_url}")
+            openapi_text = json.dumps(openapi, indent=1, ensure_ascii=False)
+            (ROOT / "out").mkdir(exist_ok=True)
+            (ROOT / "out" / f"{slot}.openapi.json").write_text(openapi_text)
+        else:
+            openapi_text = pathlib.Path(apis[0]).read_text()
+            openapi = json.loads(openapi_text)
+            brief_texts = [(pathlib.Path(b).name, pathlib.Path(b).read_text()) for b in briefs]
+        tr.log(f"read {len(brief_texts)} document(s), {sum(len(t) for _, t in brief_texts)} chars, {len(attachments)} attachment(s); tool API with {len(openapi.get('paths', {}))} paths: {list(openapi.get('paths', {}))}")
 
         check = lambda s: selftest.check_code(s, openapi)
         if a.spec:
             spec = json.loads(pathlib.Path(a.spec).read_text())
             tr.log(f"spec loaded from {a.spec}")
         else:
-            user = extract.extract_prompt(brief_texts, openapi_text)
+            user = attachments + [{"type": "text", "text": extract.extract_prompt(brief_texts, openapi_text)}]
             try:
                 text = llm.ask(tr, "read the brief and tool API, fill the agent spec", extract.SPEC_GUIDE, user, limit_s=480)
             except llm.CallTimeout:
@@ -134,7 +160,7 @@ def main():
             else:
                 try:
                     rv = llm.ask(tr, "review the spec against the brief rule by rule and correct it", REVIEW_SYSTEM,
-                                 user + "\n\n=== SPEC TO REVIEW ===\n```json\n" + json.dumps(spec, indent=1) + "\n```",
+                                 plus(user, "\n\n=== SPEC TO REVIEW ===\n```json\n" + json.dumps(spec, indent=1) + "\n```"),
                                  limit_s=int(min(420, budget_left)))
                 except llm.CallTimeout:
                     rv = None
@@ -216,6 +242,21 @@ def main():
         tr.log(f"BUILD END status={status} total={time.time() - tr.t0:.0f} s trace={tr.path}")
 
 
+def plus(user, text):
+    """Append text to a prompt that is either a string or a list of content blocks."""
+    if isinstance(user, str):
+        return user + text
+    return list(user) + [{"type": "text", "text": text}]
+
+
+CONTRACT_SYSTEM = """You turn a bank's service contract (described in its documents, in any language and format) into one
+OpenAPI 3.0 JSON document. Include every endpoint the phone agent calls, with: the path exactly as the contract gives it
+(e.g. /verify_identity), method post unless the contract says otherwise, the request body as an object schema with every
+field, its type, enum values exactly as spelled in the contract, and which fields are required, and the 200 response as an
+object schema with every field (arrays with item schemas). Put each endpoint's purpose in its summary. Do not invent
+endpoints or fields. Return only the JSON in one ```json block."""
+
+
 def repair_loop(tr, spec, openapi, check, user, rounds):
     for i in range(rounds + 1):
         errs = extract.validate(spec, openapi, check)
@@ -234,9 +275,9 @@ def repair_loop(tr, spec, openapi, check, user, rounds):
 
 def _repair_call(tr, errs, spec, user):
     return llm.ask(tr, f"repair {len(errs)} spec problem(s) found by local checks", extract.SPEC_GUIDE,
-                       user + "\n\n=== YOUR PREVIOUS SPEC ===\n```json\n" + json.dumps(spec, indent=1) +
+                       plus(user, "\n\n=== YOUR PREVIOUS SPEC ===\n```json\n" + json.dumps(spec, indent=1) +
                        "\n```\n\n=== PROBLEMS FOUND BY THE CHECKER ===\n- " + "\n- ".join(errs) +
-                       "\n\nFix every problem and return the complete corrected spec in one ```json block.", effort="medium", limit_s=360)
+                       "\n\nFix every problem and return the complete corrected spec in one ```json block."), effort="medium", limit_s=360)
 
 
 def smoke(tr, freya, workflow_id, spec):

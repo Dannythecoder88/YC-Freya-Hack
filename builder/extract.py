@@ -31,6 +31,13 @@ Return ONE JSON object in a ```json fenced block, with exactly these keys:
    "currency_word": str,               // spoken after amounts, e.g. "dollars". Use "" if the brief and tool API never name a currency (do not guess)
    "source_notes": str                 // one or two lines: which memo overrides what, any ambiguity you resolved
  },
+ "tool_map": {"verify_identity": str, "get_account": str, "create_promise": str, "add_note": str,
+              "schedule_callback": str, "transfer_to_agent": str, "close_call": str},
+        // ROLE -> the endpoint name in the tool API (last path segment) that does that job. The contract may use other
+        // names or another language. Use "" when the contract has no such endpoint. verify_identity = checks one
+        // security answer; get_account = returns the debt(s); create_promise = records a payment promise; add_note =
+        // records why a product has no promise; schedule_callback = books a callback; transfer_to_agent = hands over to
+        // a person; close_call = records the call result. All "params" field names refer to these endpoints.
  "call_variables": [str],
  "customer_name": str,                 // how the agent names the customer it asks for, with placeholders, e.g. "{{title}} {{last_name}}"              // names of the variables every call starts with, from the brief (e.g. customer_id, now, ...)
  "params": {                           // body field NAMES in the tool API file (look them up, they can differ)
@@ -161,13 +168,21 @@ model only has these tools: in greet close_call and transfer_to_agent; in third_
 in identity verify_identity, close_call, transfer_to_agent; in negotiate create_promise, add_note (if uses_notes),
 transfer_to_agent, close_call. Do not invent example amounts or currencies in rules; use placeholders like <amount>.
 
+LANGUAGE. The call language is the one the bank's documents require (meta.language). Every text the agent SAYS
+word for word (opening_line, intro_line, questions' ask, farewells, statement_*, first_ask_*, recorded_sentence,
+floor_offer_note, quoted sentences inside rules) must be written in that language, in the wording of the bank's
+documents and example conversations when they give one. Rules themselves may be written in English. Keep tool enum
+values exactly as the tool API spells them. Never copy test-customer data (names, ids, birth dates, amounts) into the spec.
+EXAMPLE CONVERSATIONS, if given, show the tone and phrasing the bank wants; use their phrasing for spoken texts, but the
+written rules win when they disagree.
+
 STYLE. Rules are instructions to the agent ("Say ...", "If the customer ..., then ..."). Keep the brief's exact required
 sentences in double quotes. Do not add rules the brief does not have. Do not leave out rules it has.
 '''
 
 
 def extract_prompt(briefs, openapi_text):
-    parts = ["Fill the spec for the following brief(s) and tool API.\n"]
+    parts = ["Fill the spec for the following bank documents and tool API.\n"]
     for i, (name, text) in enumerate(briefs):
         parts.append(f"=== BRIEF {i + 1}: {name} ===\n{text}\n")
     parts.append(f"=== TOOL API (OpenAPI) ===\n{openapi_text}\n")
@@ -194,14 +209,20 @@ def validate(spec, openapi, check_code):
             errs.append(f"missing key {k}")
     if errs:
         return errs
-    api = openapi_tools(openapi)
+    raw = openapi_tools(openapi)
+    tmap = spec.get("tool_map") or {}
+    api = {role: raw[tmap.get(role, role)] for role in ["verify_identity", "get_account", "create_promise", "add_note",
+           "schedule_callback", "transfer_to_agent", "close_call"] if tmap.get(role, role) in raw}
+    for role in ("verify_identity", "get_account", "create_promise", "close_call"):
+        if role not in api:
+            errs.append(f"tool_map.{role}={tmap.get(role)!r} is not an endpoint of the tool API (endpoints: {list(raw)})")
     p = spec["params"]
     def has(tool, field):
         return field in (api.get(tool) or {}).get("props", {})
     for tool, key in [("verify_identity", "identity_field"), ("verify_identity", "identity_answer"), ("create_promise", "promise_product"),
                       ("create_promise", "promise_amount"), ("create_promise", "promise_date"), ("close_call", "close_outcome"),
                       ("transfer_to_agent", "transfer_queue")]:
-        if not has(tool, p.get(key, "")):
+        if tool in api and not has(tool, p.get(key, "")):
             errs.append(f"params.{key}={p.get(key)!r} is not a body field of {tool}")
     def enum(tool, field):
         return ((api.get(tool) or {}).get("props", {}).get(field) or {}).get("enum")
@@ -220,7 +241,7 @@ def validate(spec, openapi, check_code):
     for q in spec["transfers"]:
         if qe and q not in qe:
             errs.append(f"transfer queue {q!r} not in {qe}")
-    for c in [spec["identity"]["failed_close"], spec["third_party"]["callback_close"]] + list(spec["transfers"].values()):
+    for c in [spec["identity"]["failed_close"], (spec.get("third_party") or {}).get("callback_close") or {"outcome": (oe or [None])[0]}] + list((spec.get("transfers") or {}).values()):
         if oe and c.get("outcome") not in oe:
             errs.append(f"close outcome {c.get('outcome')!r} not in {oe}")
     for v in re.findall(r"\{\{\s*([\w.]+)\s*\}\}", spec["opening_line"]):

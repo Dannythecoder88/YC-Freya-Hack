@@ -169,6 +169,7 @@ def build(spec, openapi):
         "statement_each": acct.get("statement_each", ""),
         "first_ask_single": acct.get("first_ask_single", ""), "first_ask_multi": acct.get("first_ask_multi", ""),
         "facts_fail_line": acct.get("facts_fail_line", ""),
+        "floor_offer_note": (spec.get("floor_offer_note") or "").strip(),
         "callback": (spec.get("third_party") or {}).get("callback") or {},
     }
     setup = runtime.setup_code(code_cfg)
@@ -299,6 +300,7 @@ HOW TO MAKE OFFERS:
 - Every offer names one amount AND one date together, in one sentence (for example the attempts listed in the account facts). Do not offer an amount first and its date in a later message.
 - An offer the customer refused or did not accept is used up. Never make the same offer again. Never offer the floor more often than the rules allow.
 - When the customer accepts an offer or names an allowed amount and date, go straight to the read-back.
+- If a date or amount the customer said is unclear or cut off (for example "the thirty"), ask which exact day or amount they mean before you check it. Never guess.
 
 HOW TO RECORD:
 - Before recording, read back the product, the amount and the date and ask for confirmation. Call create_promise only after a clear yes.

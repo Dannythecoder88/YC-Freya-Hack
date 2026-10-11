@@ -253,10 +253,11 @@ try:
             ad = D(attempt_date(k, deadline, p, dl_days, due, today, now))
             if ad > deadline: ad = deadline
             amt = a.get('amount', 'full')
+            fnote = (' (when you offer the ' + fname + ', also say: ' + CFG['floor_offer_note'] + ')') if CFG.get('floor_offer_note') else ''
             if amt == 'floor' and floor is not None:
-                what = 'the ' + fname + ' of ' + say_money(floor)
+                what = 'the ' + fname + ' of ' + say_money(floor) + fnote
             elif amt == 'full_or_floor' and floor is not None:
-                what = 'the full ' + say_money(due) + ' (or the ' + fname + ' of ' + say_money(floor) + ' if the customer already said the full amount is too much)'
+                what = 'the full ' + say_money(due) + ' (or the ' + fname + ' of ' + say_money(floor) + ' if the customer already said the full amount is too much' + fnote + ')'
             else:
                 what = 'the full ' + say_money(due)
             ladder.append('Attempt ' + str(k + 1) + ': propose ' + what + ' on ' + spoken(ad) + ' (' + ad.isoformat() + ').')
@@ -267,6 +268,8 @@ try:
         b.append('- Past due: ' + say_money(due) + ' (number for tools: ' + ('%.2f' % due) + '). Days late: ' + money(dl_days) + '.')
         if floor is not None:
             b.append('- Floor (' + fname + '): ' + say_money(floor) + ' (number for tools: ' + ('%.2f' % floor) + '). Any amount from ' + money(min_amt) + ' to ' + money(due) + ' can be recorded; never more than ' + money(due) + '.')
+            if CFG.get('floor_offer_note'):
+                b.append('- Whenever you offer the ' + fname + ', say in the same message: ' + CFG['floor_offer_note'])
         b.append('- Band: ' + rules[pid]['band'] + '. Persuasion attempts allowed for this product: ' + str(n_att) + '.')
         b.append('- Promise date must be from ' + spoken(earliest) + ' to the DEADLINE ' + spoken(deadline) + ' (' + deadline.isoformat() + '), and a business day.')
         for l in ladder: b.append('- ' + l)
@@ -532,7 +535,7 @@ try:
                 d['what_to_do_next'] = 'FAILED again. The promise for ' + pid + ' could NOT be recorded. ' + (CFG.get('final_fail_text') or 'Tell the customer you could not record it.')
         else:
             vars['x_recorded_' + pid] = 'yes'
-            d['what_to_do_next'] = 'RECORDED for ' + pid + '. ' + (CFG.get('ok_text') or '')
+            d['what_to_do_next'] = 'RECORDED. ' + (CFG.get('ok_text') or '')
 except Exception:
     pass
 '''

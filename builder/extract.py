@@ -112,6 +112,7 @@ Return ONE JSON object in a ```json fenced block, with exactly these keys:
         // the persuasion ladder in order; attempt k is used only if the band allows k attempts.
         // amount full_or_floor = full past-due amount, or the floor if the customer already said the full amount is too much.
         // date: expression; can use deadline, e.g. "last_bd_this_or_next_week(today)" or "deadline"
+ "floor_offer_note": str,              // what the brief requires to be said whenever the floor is offered (e.g. that the rest stays overdue), "" if nothing
  "min_amount": "floor" | "full",       // smallest amount that may be recorded
  "guard": true,                        // keep true: code refuses promises outside the date/amount limits
  "promise": {

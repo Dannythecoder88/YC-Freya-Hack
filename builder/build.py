@@ -158,7 +158,9 @@ def main():
             tr.log("WARNING: spec problems remain: " + " | ".join(errs[:6]))
         tr.log(f"spec source notes: {spec['meta'].get('source_notes', '')}")
 
-        wf, _ = generate.build(spec, openapi)
+        wf, code = generate.build(spec, openapi)
+        for nm, src in code.items():
+            compile(src, nm, "exec")  # never upload in-call code that cannot run
         hook_errs = selftest.hook_smoke(wf)
         tr.log("local hook test: " + ("ok" if not hook_errs else " | ".join(hook_errs)))
         (ROOT / "out" / f"{slot}.workflow.json").write_text(json.dumps(wf, indent=1))

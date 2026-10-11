@@ -4,7 +4,7 @@
     {"name": "Daniel Joseph", "email": "daniel.joseph6514@gmail.com"}
   ],
   "repo": "https://github.com/Dannythecoder88/YC-Freya-Hack",
-  "commit": "c564131",
+  "commit": "8505bb6",
   "run_command": "python3 builder/build.py {case_folder} {mock_url}",
   "workflow": "submission/final.workflow.json",
   "trace": "traces/final.log",

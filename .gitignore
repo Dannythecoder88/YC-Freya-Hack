@@ -9,3 +9,5 @@ results/
 .freya-agents.json
 .DS_Store
 briefs/hidden-*
+node_modules/
+.wrangler/

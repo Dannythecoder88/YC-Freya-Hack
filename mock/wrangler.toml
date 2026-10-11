@@ -1,0 +1,11 @@
+name = "freya-bank-mock"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[[durable_objects.bindings]]
+name = "CUSTOMER"
+class_name = "Customer"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Customer"]

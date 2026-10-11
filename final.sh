@@ -1,37 +1,34 @@
 #!/bin/sh
-# Final run: build both hidden briefs, keep the traces, commit and push only the submission files,
-# and print the submission form.  Usage:  sh final.sh
-# Expects briefs/hidden-1.md, briefs/hidden-1.openapi.json, briefs/hidden-2.md, briefs/hidden-2.openapi.json
+# Final run:  sh final.sh <case_folder> <mock_url>
+# Builds the phone agent from the case folder against our mock, keeps the trace, commits and pushes the
+# workflow export, the trace and the mock source, and writes submission.json.
 cd "$(dirname "$0")" || exit 1
+folder="$1"; mock="$2"
+if [ ! -d "$folder" ] || [ -z "$mock" ]; then echo "usage: sh final.sh <case_folder> <mock_url>"; exit 1; fi
 mkdir -p traces submission
-for n in 1 2; do
-  b="briefs/hidden-$n.md"; t="briefs/hidden-$n.openapi.json"
-  if [ ! -f "$b" ] || [ ! -f "$t" ]; then echo "missing $b or $t"; exit 1; fi
-  echo "=== building hidden-$n ==="
-  caffeinate -i python3 builder/build.py "$b" "$t" 2>&1 | tee "traces/hidden-$n.log"
-  if [ ! -s "submission/hidden-$n.workflow.json" ] || grep -q '"workflow_id": null' "submission/hidden-$n.workflow.json"; then
-    echo "!!! hidden-$n did not export from Freya. Look at traces/hidden-$n.log, fix the bug, run again."
-  fi
-done
-git add submission/hidden-* traces/hidden-*
-git commit -q -m "Hidden brief runs: exported phone agents and builder traces" && git push -q
-c=$(git rev-parse --short HEAD)
+echo "=== mock health: $(curl -s "$mock/health")"
+caffeinate -i python3 builder/build.py "$folder" "$mock" 2>&1 | tee traces/final.log
+if [ ! -s submission/final.workflow.json ] || grep -q '"workflow_id": null' submission/final.workflow.json; then
+  echo "!!! the agent was not exported from Freya. Read traces/final.log, fix the bug, run again."; exit 1
+fi
+c_prev=$(git rev-parse --short HEAD)
 r=$(git remote get-url origin | sed 's/\.git$//')
-cat <<EOF
-
-=== SUBMISSION FORM (send before 20:00 UTC / 4:00 PM New York) ===
+git add submission/final.workflow.json traces/final.log traces/final-*.log mock/
+git commit -q -m "Final case: exported phone agent, builder trace, mock" && git push -q
+c=$(git rev-parse --short HEAD)
+cat > submission.json <<EOF
 {
   "team": "Daniel Joseph",
+  "members": [
+    {"name": "Daniel Joseph", "email": "daniel.joseph6514@gmail.com"}
+  ],
   "repo": "$r",
   "commit": "$c",
-  "run_command": "python3 builder/build.py {brief_path} {tool_api_path}",
-  "workflows": {
-    "hidden-1": "submission/hidden-1.workflow.json",
-    "hidden-2": "submission/hidden-2.workflow.json"
-  },
-  "traces": {
-    "hidden-1": "traces/hidden-1.log",
-    "hidden-2": "traces/hidden-2.log"
-  }
+  "run_command": "python3 builder/build.py {case_folder} {mock_url}",
+  "workflow": "submission/final.workflow.json",
+  "trace": "traces/final.log",
+  "mock_url": "$mock"
 }
 EOF
+git add submission.json && git commit -q -m "submission.json" && git push -q
+echo; echo "=== submission.json (send before 20:00 UTC / 4:00 PM New York) ==="; cat submission.json

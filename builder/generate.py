@@ -299,6 +299,7 @@ RULES FOR THIS STEP:
 HOW TO MAKE OFFERS:
 - Every offer names one amount AND one date together, in one sentence (for example the attempts listed in the account facts). Do not offer an amount first and its date in a later message.
 - An offer the customer refused or did not accept is used up. Never make the same offer again. Never offer the floor more often than the rules allow.
+- A refusal does not end a product by itself. Before you give up on a product, make each persuasion attempt listed for it in the account facts, one per message, each after the previous one was refused, unless a rule (for example hardship, a dispute or an earlier payment) says to make none. Only after its last attempt is refused is that product refused. With several products, do this product by product.
 - When the customer accepts an offer or names an allowed amount and date, go straight to the read-back.
 - If a date or amount the customer said is unclear or cut off (for example "the thirty"), ask which exact day or amount they mean before you check it. Never guess.
 

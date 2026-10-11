@@ -381,7 +381,7 @@ def self_test(tr, freya, slot, wf, saved, scs, system, user, mock_url, call_vars
                           "ALL_PASS if every call passed.", list(user) + [{"type": "text", "text": "\n\n=== WORKFLOW ===\n" + json.dumps(wf, ensure_ascii=False)[:60000] +
                           "\n\n=== TEST CALLS ===\n" + "\n\n".join(reports)}], effort="medium", limit_s=300)
         tr.log("TEST verdict:\n    " + "\n    ".join(verdict.strip().splitlines()[:25]))
-        if "ALL_PASS" in verdict or time.time() - tr.t0 > deadline_s - 780:
+        if "ALL_PASS" in verdict or time.time() - tr.t0 > deadline_s - 600:
             if "ALL_PASS" not in verdict:
                 tr.log("no time left for a fix round within the 30-minute limit")
             break

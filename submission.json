@@ -1,0 +1,12 @@
+{
+  "team": "Daniel Joseph",
+  "members": [
+    {"name": "Daniel Joseph", "email": "daniel.joseph6514@gmail.com"}
+  ],
+  "repo": "https://github.com/Dannythecoder88/YC-Freya-Hack",
+  "commit": "620e1fa",
+  "run_command": "python3 builder/build.py {case_folder} {mock_url}",
+  "workflow": "submission/final.workflow.json",
+  "trace": "traces/final.log",
+  "mock_url": "https://freya-bank-mock.djfreyabank.workers.dev"
+}

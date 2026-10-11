@@ -88,5 +88,14 @@ def load_case(folder, log=print):
     return texts, attach, openapi
 
 
+MAX_DOC_CHARS = 60_000   # big data dumps (e.g. full test fixtures) are sampled, documents are kept whole
+
+
 def as_prompt(texts):
-    return "\n\n".join(f"=== DOCUMENT: {name} ===\n{t}" for name, t in texts)
+    out = []
+    for name, t in texts:
+        if len(t) > MAX_DOC_CHARS:
+            t = (t[:MAX_DOC_CHARS // 2] + f"\n\n... [{len(t) - MAX_DOC_CHARS // 2} more characters of this large data file left out; "
+                 "the beginning above shows its structure] ...")
+        out.append(f"=== DOCUMENT: {name} ===\n{t}")
+    return "\n\n".join(out)

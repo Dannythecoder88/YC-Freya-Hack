@@ -30,9 +30,15 @@ VERIFIED ON FREYA DURING PRACTICE (follow these; they come from real runs):
 - Booleans from results arrive as strings: test both "true" and "True" with equals, or write string flags in hooks.
 - Routing: transitions are checked in order; deterministic variable conditions first; group variable checks as
   {"logic":"or","conditions":[...]}; AND only nested inside. A passthrough node ends with an "always" transition.
-- Do NOT make a code node the initial node (the chat test route skips it). Start with a conversation node; put
-  code nodes later as passthrough nodes (code node: node_type "code", pre_actions with a code_exec function whose
-  parameters.properties.code.default is the source).
+- Load the data the first spoken sentence depends on BEFORE any conversation node: start with a passthrough
+  api_request node (pre_actions = the service call, node-level response_mapping, a post-hook that writes a string state
+  flag, and an "always" fallback transition), then code nodes if needed, then the first conversation node. Real calls
+  and simulations run these first steps. (Code node: node_type "code", pre_actions with a code_exec function whose
+  parameters.properties.code.default is the source.)
+- NEVER let the model state an amount, date, card or address that did not come from a tool result or a code-computed
+  variable in its prompt. Every prompt that reads data must say: if the data variable is empty or not loaded, do not
+  guess, say a neutral holding line or hand over as the rules say. A conversation node must not answer the caller's
+  request before the tool that provides the answer has returned.
 - Dates: `now` is a call variable (ISO with offset, e.g. 2026-10-12T10:30:00+03:00). Compute date facts in code
   (datetime is available) and give the model finished facts in a variable used as {{var}} in prompts. Always set every
   variable a prompt uses, even to a fallback, or the model sees the literal placeholder.
@@ -94,8 +100,6 @@ def lint(wf, mock_url, call_vars):
     nodes = wf.get("nodes") or {}
     if wf.get("initial_node") not in nodes:
         errs.append(f"initial_node {wf.get('initial_node')!r} is not a node")
-    elif nodes[wf["initial_node"]].get("node_type") == "code":
-        errs.append("the initial node is a code node; start with a conversation node")
     s = json.dumps(wf, ensure_ascii=False)
     if ": null" in s:
         errs.append("the workflow contains null values")

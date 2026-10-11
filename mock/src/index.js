@@ -1,100 +1,75 @@
-// Mock of the bank's services for the phone agent. One Durable Object per customer keeps that customer's state
-// (wrong answers, verification, promises, notes, the call log), so concurrent calls never share state.
-import { CUSTOMERS } from "./customers.js";
+// Freya Bank statement services mock (Cloudflare Worker), written from the case's service contract and test customers.
+// Stateless: every answer is the exact stored response for (service, customer, card, requested week), HTTP status
+// included, with the stored delay when there is one.
+import DATA from "./test-customers.json";
 
-const MAX_WRONG = 3;                 // adjust to the service contract
-const json = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
+// Exact paths from the integration document go here (path -> service). Until then any path whose letters spell a
+// service name (cards/list, cards.list, cardsList, /api/v1/cards-list, ...) resolves to it.
+const ROUTES = {};
+const SERVICES = ["cards.list", "cards.balance", "statement.week.get", "statement.week.decide", "statement.week.change", "contact.email.get", "statement.pdf.send"];
+const norm = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const BY_NORM = Object.fromEntries(SERVICES.map(s => [norm(s), s]));
+const CUSTOMERS = Object.fromEntries(DATA.customers.map(c => [String(c.customerNo), c]));
+
+const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+const errorBody = (code, msg) => ({ result: { guid: crypto.randomUUID().replace(/-/g, ""), returnCode: code, messageText: msg, code, message: msg, type: "ERROR", details: { guid: null, rootCause: null, errorOrigin: "mock" } } });
+
+function serviceFor(path) {
+  if (ROUTES[path]) return ROUTES[path];
+  const n = norm(path);
+  for (const [k, s] of Object.entries(BY_NORM)) if (n.endsWith(k)) return s;
+  return null;
+}
+
+// find a value in the request under any of several spellings (top level or one level down)
+function pick(body, names) {
+  const want = names.map(norm);
+  const scan = obj => {
+    if (!obj || typeof obj !== "object") return undefined;
+    for (const [k, v] of Object.entries(obj)) if (want.includes(norm(k)) && v !== undefined && v !== null && v !== "") return v;
+    return undefined;
+  };
+  let v = scan(body);
+  if (v === undefined) for (const x of Object.values(body || {})) { v = scan(x); if (v !== undefined) break; }
+  return v;
+}
+
+function byCard(table, card) {
+  if (!table || card === undefined) return undefined;
+  const c = String(card).replace(/\s/g, "");
+  if (table[c]) return table[c];
+  const last4 = c.replace(/\D/g, "").slice(-4);
+  const keys = Object.keys(table).filter(k => k.replace(/\D/g, "").slice(-4) === last4);
+  return keys.length === 1 ? table[keys[0]] : undefined;
+}
 
 export default {
-  async fetch(req, env) {
+  async fetch(req) {
     const url = new URL(req.url);
-    const path = url.pathname.replace(/\/+$/, "");
-    if (req.method === "GET" && (path === "" || path === "/health")) return json({ ok: true, service: "bank mock" });
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+    if (path === "/" || path === "/health") return json({ ok: true, service: "Freya Bank statement services mock", customers: DATA.customers.length });
     let body = {};
-    if (req.method === "GET" && path.startsWith("/ledger/")) {
-      const id = decodeURIComponent(path.slice(8));
-      return env.CUSTOMER.get(env.CUSTOMER.idFromName(id)).fetch("https://do/ledger", { method: "POST", body: JSON.stringify({ customer_id: id }) });
+    if (req.method !== "GET") { try { body = await req.json(); } catch { body = {}; } }
+    for (const [k, v] of url.searchParams) if (!(k in body)) body[k] = v;
+
+    const service = serviceFor(path);
+    if (!service) return json(errorBody("FB_IVR_CHANNEL_404", "Unknown service " + path), 404);
+    const custNo = pick(body, ["customerNo", "customerNumber", "customer_no", "customerId", "customer_id", "musteriNo"]);
+    const cust = CUSTOMERS[String(custNo ?? "").replace(/\D/g, "")];
+    if (!cust) return json(errorBody("FB_IVR_CHANNEL_102", "Müşteri bulunamadı."), 404);
+
+    let entry = cust.services[service];
+    if (entry && !("http" in entry)) {               // keyed by card (and maybe by requested week)
+      const card = pick(body, ["cardNumber", "card_number", "maskedCardNumber", "cardNo", "kartNo"]);
+      entry = byCard(entry, card);
+      if (entry && !("http" in entry)) {
+        const week = pick(body, ["newStatementWeek", "statementWeek", "week", "new_statement_week"]);
+        entry = entry[String(week ?? "").replace(/\D/g, "")];
+      }
     }
-    try { body = await req.json(); } catch { return json({ ok: false, error: "body must be JSON" }, 400); }
-    const id = String(body.customer_id || "");
-    if (!id) return json({ ok: false, error: "customer_id missing" });
-    const stub = env.CUSTOMER.get(env.CUSTOMER.idFromName(id));
-    return stub.fetch("https://do" + path, { method: "POST", body: JSON.stringify(body) });
+    if (!entry) return json(errorBody("FB_IVR_CHANNEL_400", "Geçersiz istek."), 400);
+    const delay = entry.delaySeconds ?? entry.gecikmeSaniye;
+    if (delay) await new Promise(r => setTimeout(r, Number(delay) * 1000));
+    return json(entry.response ?? entry.yanit ?? {}, entry.http || 200);
   },
 };
-
-export class Customer {
-  constructor(state) { this.state = state; }
-
-  async load(id) {
-    let s = await this.state.storage.get("s");
-    if (!s) s = { id, wrong: 0, passed: {}, verified: false, closed: false, promises: [], notes: [], callbacks: [], transfers: [], outcome: null, reason: null, calls: [] };
-    return s;
-  }
-
-  async fetch(req) {
-    const path = new URL(req.url).pathname;
-    const b = await req.json();
-    const s = await this.load(String(b.customer_id));
-    const cust = CUSTOMERS[s.id];
-    const op = path.replace(/^\//, "");
-    let r;
-    if (op === "ledger") return json(s);
-    if (!cust) r = { ok: false, error: "unknown customer_id" };
-    else if (s.closed) r = { ok: false, error: "call already closed" };
-    else r = this.handle(op, b, s, cust);
-    s.calls.push({ tool: op, args: b, result: r, at: new Date().toISOString() });
-    await this.state.storage.put("s", s);
-    return json(r);
-  }
-
-  handle(op, b, s, c) {
-    switch (op) {
-      case "verify_identity": {
-        if (s.wrong >= MAX_WRONG) return { ok: false, error: "identity check locked", verified: false, wrong_answers_left: 0 };
-        const field = String(b.field || ""), ans = String(b.answer || "").trim();
-        if (!(field in c.identity)) return { ok: false, error: "unknown field" };
-        if (field === "date_of_birth" && !/^\d{4}-\d{2}-\d{2}$/.test(ans)) return { ok: false, error: "date must be YYYY-MM-DD" };
-        const want = String(c.identity[field]);
-        let ok = ans.replace(/\s/g, "").toUpperCase() === want.replace(/\s/g, "").toUpperCase();
-        const res = { ok: true, verified: ok };
-        if (ok) s.passed[field] = true;
-        else {
-          if (field === "date_of_birth") {          // day and month swapped
-            const [y, m, d] = ans.split("-");
-            if (`${y}-${d}-${m}` === want && d !== m) return { ok: true, verified: false, hint: "day_month_swapped", wrong_answers_left: MAX_WRONG - s.wrong };
-          }
-          s.wrong += 1;
-        }
-        s.verified = Object.keys(c.identity).every(k => s.passed[k]);
-        return { ...res, wrong_answers_left: MAX_WRONG - s.wrong, all_verified: s.verified };
-      }
-      case "get_account":
-        if (!s.verified) return { ok: false, error: "identity not verified" };
-        return { ok: true, products: c.products };
-      case "create_promise": {
-        if (!s.verified) return { ok: false, error: "identity not verified" };
-        const p = c.products.find(x => x.product_id === b.product_id);
-        if (!p) return { ok: false, error: "unknown product_id" };
-        if (s.promises.find(x => x.product_id === b.product_id)) return { ok: false, error: "this product already has a promise" };
-        const pr = { promise_id: "pr" + (s.promises.length + 1), product_id: b.product_id, amount: Number(b.amount), date: String(b.date) };
-        s.promises.push(pr);
-        return { ok: true, promise_id: pr.promise_id };
-      }
-      case "add_note":
-        s.notes.push({ product_id: b.product_id, reason: b.reason, text: b.text || "" });
-        return { ok: true };
-      case "schedule_callback":
-        s.callbacks.push({ date: b.date, time: b.time });
-        return { ok: true };
-      case "transfer_to_agent":
-        s.transfers.push({ queue: b.queue });
-        return { ok: true };
-      case "close_call":
-        s.closed = true; s.outcome = b.outcome || null; s.reason = b.reason || null;
-        return { ok: true };
-      default:
-        return { ok: false, error: "unknown operation " + op };
-    }
-  }
-}

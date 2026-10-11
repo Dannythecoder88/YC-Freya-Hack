@@ -6,9 +6,10 @@ cd "$(dirname "$0")" || exit 1
 folder="$1"; mock="$2"
 if [ ! -d "$folder" ] || [ -z "$mock" ]; then echo "usage: sh final.sh <case_folder> <mock_url>"; exit 1; fi
 mkdir -p traces submission
+rm -f submission/final.workflow.json          # never pair this run's trace with an older export
 echo "=== mock health: $(curl -s "$mock/health")"
 caffeinate -i python3 builder/build.py "$folder" "$mock" 2>&1 | tee traces/final.log
-if [ ! -s submission/final.workflow.json ] || grep -q '"workflow_id": null' submission/final.workflow.json; then
+if ! grep -q "BUILD END status=ok" traces/final.log || [ ! -s submission/final.workflow.json ] || grep -q '"workflow_id": null' submission/final.workflow.json; then
   echo "!!! the agent was not exported from Freya. Read traces/final.log, fix the bug, run again."; exit 1
 fi
 c_prev=$(git rev-parse --short HEAD)

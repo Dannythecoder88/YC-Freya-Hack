@@ -53,7 +53,7 @@ def response_fields(api, name):
     return list((sch.get("properties") or {}).keys())
 
 
-def make_tool(api, name, spec, call_vars, description, baked=None, timeout=12000, retries=0, hooks=(None, None), mapping=None):
+def make_tool(api, name, spec, call_vars, description, baked=None, timeout=25000, retries=0, hooks=(None, None), mapping=None):
     t = api[name]
     notes = (spec.get("tool_notes") or {}).get(name) or {}
     props = {}
@@ -250,6 +250,13 @@ How you use tools:
 - Never say that something was recorded, booked or transferred unless the tool result shows it worked.
 - Never invent amounts, dates, reasons or facts. If you do not know something, say you do not have that information.
 
+How people talk on the phone:
+- People often say one answer across two or more messages: a date as "9 September" and then "1990", digits as "46" and then "51", an amount as "four hundred" and then "and twenty". Keep every piece already said and combine the pieces in the order given. Never throw a piece away.
+- If what was said so far is incomplete, ask only for the missing part in a few words ("And the year?", "And the other two digits?"). Never ask them to repeat the whole answer and never say you need the full answer.
+- If a message stops in the middle of a sentence or a number, say only "Go on." and wait for the rest.
+- If they correct themselves ("the 21st, sorry, I mean the 20th"), use the corrected value. Numbers and dates said in words count the same as digits.
+- If they talk about something unrelated, answer briefly and politely, then return to where you were.
+
 Bank rules that apply in every step of the call:
 {sys_rules}"""
 
@@ -269,7 +276,7 @@ Allowed callback window, computed for this call: {{{{x_callback_text}}}}.
     id_task = f"""CURRENT STEP: security check. The customer confirmed who they are. You have asked (or are asking) the security questions, one at a time, in this order:
 {chr(10).join(f"{i + 1}. {q['field']}: ask \"{q['ask']}\" Send the answer as: {q.get('answer_format', 'as said')}" for i, q in enumerate(ident['questions']))}
 {bullet(ident['rules'])}
-- Call verify_identity once for each complete answer, with the field of the question you asked. If the customer gives only part of an answer, wait for the rest before calling.
+- Call verify_identity once for each COMPLETE answer, with the field of the question you asked. Answers often come in pieces over several messages: as soon as the pieces together form the complete answer, combine them and call verify_identity (for example "9 September" then "1990" -> 1990-09-09; "99" then "04" -> 9904). Until then ask only for the missing piece ("And the year?").
 - Never say anything about the account, the debt or the reason for the call in this step, even if asked. Never tell the customer which answer is correct.
 - After every verify_identity result, do exactly what its what_to_do_next says."""
 
@@ -287,6 +294,11 @@ Weekday words: {{{{x_weekdays}}}}
 RULES FOR THIS STEP:
 {neg_rules}
 {("NOTES:" + chr(10) + notes_rules) if notes_rules else ""}
+
+HOW TO MAKE OFFERS:
+- Every offer names one amount AND one date together, in one sentence (for example the attempts listed in the account facts). Do not offer an amount first and its date in a later message.
+- An offer the customer refused or did not accept is used up. Never make the same offer again. Never offer the floor more often than the rules allow.
+- When the customer accepts an offer or names an allowed amount and date, go straight to the read-back.
 
 HOW TO RECORD:
 - Before recording, read back the product, the amount and the date and ask for confirmation. Call create_promise only after a clear yes.
@@ -369,7 +381,7 @@ HOW TO RECORD:
         return {
             "name": name, "node_type": "api_request", "passthrough": True, "passthrough_default_transition": "end",
             "on_enter": {"type": "tts", "text": farewell} if farewell else {"type": "silent"}, "disable_inactivity_monitor": True,
-            "pre_actions": [{"type": "function", "config": {"timeoutMs": 12000, "maxRetries": 2},
+            "pre_actions": [{"type": "function", "config": {"timeoutMs": 25000, "maxRetries": 2},
                              "function": {"name": "close_call", "handler": "__function__:api_call", "description": "Close the call.",
                                           "parameters": {"type": "object", "properties": {
                                               "url": {"type": "string", "default": api["close_call"]["url"]},

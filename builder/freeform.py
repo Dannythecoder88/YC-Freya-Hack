@@ -279,7 +279,7 @@ in 3-6 sentences, including at least one tricky behaviour (number said in pieces
 def scenarios(tr, texts_prompt, call_vars, now_example, n=3):
     text = llm.ask(tr, f"write {n} self-test scenarios from the test customers and example conversations", SCENARIO_SYSTEM,
                    f"CALL VARIABLES: {', '.join(call_vars)}. For `now` use a realistic value like {now_example}.\n"
-                   f"Write {n} varied scenarios (one ordinary, one edge case, one adversarial).\n\nBANK DOCUMENTS:\n{texts_prompt}",
+                   f"Write {n} varied scenarios: ordinary ones and the hardest edge cases the documents describe (for example ambiguous choices that need extra questions, numbers said in pieces, failing or slow services, adversarial callers). Write each scenario in the call's language.\n\nBANK DOCUMENTS:\n{texts_prompt}",
                    effort="medium", limit_s=240)
     m = re.findall(r"```json\s*(.*?)```", text, re.S)
     return json.loads(m[-1] if m else text)[:n]
@@ -314,7 +314,7 @@ def build_freeform(tr, freya, slot, texts, attachments, openapi, mock_url, deadl
 
     # self-test: simulated customers from the documents' test customers, through our mock
     try:
-        scs = scenarios(tr, texts_prompt, call_vars, "2026-10-12T10:30:00+03:00")
+        scs = scenarios(tr, texts_prompt, call_vars, "2026-10-12T10:30:00+03:00", n=4)
     except Exception as e:
         scs = []
         tr.log(f"could not write test scenarios: {e}")
@@ -325,17 +325,57 @@ def build_freeform(tr, freya, slot, texts, attachments, openapi, mock_url, deadl
     return wf, saved
 
 
+def sim_test(tr, freya, agent_id, scs, rnd):
+    """Run the scenarios as one Freya simulation (the way the agent is scored). Returns one report per scenario."""
+    personas = [{"name": f"selftest {rnd}-{i + 1} {sc.get('title', '')}"[:80],
+                 "prompt": "OUTPUT RULE: write only the words you say on the phone, in the language of the call (the agent's language). "
+                           "One or two short sentences per turn. When the agent says goodbye or hands you over, say a short goodbye.\n\n"
+                           "YOUR SCENARIO: " + sc.get("scenario", ""),
+                 "successCriteria": sc.get("expect", "The agent follows the bank's rules."), "tags": ["selftest"]} for i, sc in enumerate(scs)]
+    made = freya.create_personas(personas)["personas"]
+    vmap = {p["id"]: (sc.get("variables") or {}) for p, sc in zip(made, scs)}
+    tr.log(f"TEST: simulation with {len(made)} simulated customers")
+    sim, it, status = freya.run_simulation(agent_id, f"selftest round {rnd}", vmap, max_seconds=300, concurrency=len(made))
+    runs = {r["personaId"]: r for r in freya.get_iteration(sim, it)["runs"]}
+    reports = []
+    for p, sc in zip(made, scs):
+        r = runs.get(p["id"], {})
+        lines = [f"simulator verdict: {r.get('outcome')} - {str(r.get('reason') or '')[:400]}"]
+        if r.get("callId"):
+            try:
+                c = freya.get_call(r["callId"])
+                lines.append(f"ended: {c.get('endedReason')}")
+                for m in c.get("messages", []):
+                    role = m.get("role")
+                    if role in ("assistant", "user"):
+                        lines.append(f"{'AGENT' if role == 'assistant' else 'CUSTOMER'}: {m.get('message')}")
+                    elif role == "system":
+                        try:
+                            ev = json.loads(m.get("message") or "{}")
+                        except Exception:
+                            continue
+                        e = ev.get("event")
+                        if e == "node_enter":
+                            lines.append(f"  [node {ev.get('node')}]")
+                        elif e == "function_call_start":
+                            lines.append(f"  [call {ev.get('function')} {json.dumps((ev.get('args') or {}).get('body', ''), ensure_ascii=False)[:200]}]")
+                        elif e == "function_call_complete":
+                            lines.append(f"  [result {ev.get('function')} {json.dumps(ev.get('result'), ensure_ascii=False)[:300]}]")
+                        elif e == "error":
+                            lines.append(f"  [error {ev.get('message')}]")
+            except Exception as e:
+                lines.append(f"(could not read the call: {str(e)[:100]})")
+        t = "\n".join(lines)
+        tr.log(f"TEST round {rnd} | {sc.get('title')}:\n    " + "\n    ".join(t.splitlines()[:70]))
+        reports.append(f"### {sc.get('title')}\nEXPECTED: {sc.get('expect')}\nTRANSCRIPT:\n{t}")
+    return reports
+
+
 def self_test(tr, freya, slot, wf, saved, scs, system, user, mock_url, call_vars, deadline_s):
     for rnd in range(2):
         if not scs or time.time() - tr.t0 > deadline_s - 420:
             break
-        reports = []
-        for sc in scs:
-            if time.time() - tr.t0 > deadline_s - 360:
-                break
-            t = chat_test(tr, freya, saved["workflow_id"], sc.get("variables") or {}, sc.get("scenario", ""))
-            tr.log(f"TEST round {rnd + 1} | {sc.get('title')}:\n    " + "\n    ".join(t.splitlines()[:60]))
-            reports.append(f"### {sc.get('title')}\nEXPECTED: {sc.get('expect')}\nTRANSCRIPT:\n{t}")
+        reports = sim_test(tr, freya, saved["agent_id"], scs, rnd + 1)
         verdict = llm.ask(tr, "judge the test calls against the documents", "You review test calls of a bank phone agent against the "
                           "bank's documents. For each call say PASS or FAIL and, for failures, the exact cause in the workflow. End with a line "
                           "ALL_PASS if every call passed.", list(user) + [{"type": "text", "text": "\n\n=== WORKFLOW ===\n" + json.dumps(wf, ensure_ascii=False)[:60000] +

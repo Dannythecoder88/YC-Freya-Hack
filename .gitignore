@@ -1,0 +1,10 @@
+.env
+*.key
+__pycache__/
+.venv/
+*.zip
+out/
+results/
+.personas.json
+.freya-agents.json
+.DS_Store

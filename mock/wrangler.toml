@@ -1,3 +1,12 @@
 name = "freya-bank-mock"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
+
+# the first version kept per-customer state in a Durable Object; this one is stateless
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Customer"]
+
+[[migrations]]
+tag = "v2"
+deleted_classes = ["Customer"]

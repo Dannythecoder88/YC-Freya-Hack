@@ -24,7 +24,7 @@ for (const c of DATA.customers) {
 
 let seq = 0;
 const guid = () => (Date.now().toString(16) + (++seq).toString(16).padStart(6, "0") + "0".repeat(32)).slice(0, 32);
-const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" } });
 function error(status, code, type, msg) {
   const g = guid();
   return json({ result: { guid: g, returnCode: code, messageText: msg, code, message: msg, type, details: { guid: g, rootCause: type === "ERROR" ? "InvalidArguments" : "NotFound", errorOrigin: "ivr-gateway-test:ivr-channel-v0" } } }, status);
@@ -47,8 +47,15 @@ function cardEntry(table, card) {
   return undefined;
 }
 
+// Freya's "Test API Request" button may send variables unfilled ("{{customerNumber}}"); answer those with the
+// first test customer so the panel test works (as in the case's example Worker).
+const isTemplate = v => typeof v === "string" && (v.startsWith("{{") || v.startsWith("%7B%7B"));
+const SAMPLE = DATA.customers[0];
+const CORS = { "Access-Control-Allow-Origin": "*" };
+
 export default {
   async fetch(req) {
+    if (req.method === "OPTIONS") return new Response(null, { headers: { ...CORS, "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "*" } });
     const url = new URL(req.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     if (path === "/" || path === "/health") return json({ ok: true, service: "Freya Bank statement services mock", customers: DATA.customers.length });
@@ -59,6 +66,9 @@ export default {
     // contract envelope: { data: {...}, call: {...} }; also accept the fields at the top level
     const d = (body && typeof body.data === "object" && body.data) ? { ...body, ...body.data } : (body || {});
 
+    if (isTemplate(d.customerNo)) d.customerNo = SAMPLE.customerNo;
+    if (isTemplate(d.cardNumber)) d.cardNumber = Object.keys(Object.values(SAMPLE.services).find(v => v && !("http" in v)) || {})[0] || d.cardNumber;
+    if (isTemplate(d.newStatementWeek)) d.newStatementWeek = "2";
     const svc = serviceFor(path);
     if (!svc) return error(404, "NOT_FOUND", "ERROR", "unknown service " + path);
 

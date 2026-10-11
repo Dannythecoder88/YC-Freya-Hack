@@ -67,9 +67,12 @@ PLATFORM REFERENCE (the kit's documentation):
 
 {lessons}
 
-Keep the JSON compact: no layout fields, no repeated boilerplate beyond what the platform needs, short hooks.
-Output: first DESIGN NOTES (at most 25 lines), then the complete workflow JSON in one ```json block (the object that
-goes in "workflow": initial_node, system_prompt, nodes, global_nodes, test_variables). Leave out agent_config."""
+COMPACT OUTPUT FORMAT (required, to keep the answer short): put every tool definition ONCE in a top-level object
+"tool_library" ({"<tool name>": <full tool object as the platform expects, with type, config, function, hooks>}).
+In a conversation node, "tools" is a list of tool NAMES from the library; in an api_request node, "pre_actions" may
+also be a list of names. The builder expands names into full copies. No layout fields, short hooks, short prompts.
+Output: first DESIGN NOTES (at most 25 lines), then the workflow JSON in one ```json block (initial_node, system_prompt,
+nodes, global_nodes, test_variables, tool_library). Leave out agent_config."""
 
 CUSTOMER_SYSTEM = """You play a bank customer on a phone call, in the language the agent uses. Follow your scenario.
 Write only what you say: one or two short sentences, no stage directions. If the agent says goodbye or hands you
@@ -138,7 +141,7 @@ def design(tr, texts_prompt, attachments, contract_json, mock_url, call_vars):
         f"MOCK_URL: {mock_url}\nCALL VARIABLES (given on every call): {', '.join(call_vars)}\n\n"
         f"SERVICE CONTRACT (OpenAPI, endpoints served at MOCK_URL + path):\n{contract_json}\n\n"
         f"BANK DOCUMENTS:\n{texts_prompt}\n\nDesign and return the workflow."}]
-    text = llm.ask(tr, "design the phone agent workflow from the bank's documents", system, user, effort="medium", limit_s=900, fast=True)
+    text = llm.ask(tr, "design the phone agent workflow from the bank's documents", system, user, effort="low", max_tokens=128000, limit_s=1140, fast=True)
     notes = text.split("```json")[0].strip()
     tr.log("design notes:\n    " + "\n    ".join(notes.splitlines()[:30]))
     return _parse(text), system, user
@@ -149,9 +152,9 @@ def fix(tr, system, user, wf, problems, purpose):
 
 You now get your previous workflow plus problems: platform validation errors and/or transcripts of test calls with what
 went wrong. Fix every problem without breaking what works. First list your fixes (at most 15 lines), then return the
-complete corrected workflow JSON in one ```json block.""",
-        list(user) + [{"type": "text", "text": "\n\n=== YOUR PREVIOUS WORKFLOW ===\n```json\n" + json.dumps(wf, ensure_ascii=False, indent=1) +
-                       "\n```\n\n=== PROBLEMS ===\n" + problems}], effort="medium", limit_s=900, fast=True)
+complete corrected workflow JSON (compact format, with tool_library) in one ```json block.""",
+        list(user) + [{"type": "text", "text": "\n\n=== YOUR PREVIOUS WORKFLOW ===\n```json\n" + json.dumps(compact(wf), ensure_ascii=False) +
+                       "\n```\n\n=== PROBLEMS ===\n" + problems}], effort="low", max_tokens=128000, limit_s=900, fast=True)
     tr.log("fixes:\n    " + "\n    ".join(text.split("```json")[0].strip().splitlines()[:20]))
     return _parse(text)
 
@@ -163,6 +166,44 @@ def _parse(text):
     if "workflow" in wf and "nodes" not in wf:
         wf = wf["workflow"]
     wf.pop("agent_config", None)
+    return expand(wf)
+
+
+def expand(wf):
+    """Replace tool names in nodes with full copies from tool_library (the compact output format)."""
+    import copy
+    lib = wf.pop("tool_library", None) or {}
+    for n in (wf.get("nodes") or {}).values():
+        for key in ("tools", "pre_actions"):
+            items = n.get(key)
+            if isinstance(items, list):
+                out = []
+                for t in items:
+                    if isinstance(t, str):
+                        if t not in lib:
+                            raise ValueError(f"tool {t!r} is not in tool_library")
+                        out.append(copy.deepcopy(lib[t]))
+                    else:
+                        out.append(t)
+                n[key] = out
+    return wf
+
+
+def compact(wf):
+    """The inverse of expand, to show a workflow back to Claude in the compact format."""
+    import copy
+    wf = copy.deepcopy(wf)
+    lib = {}
+    for n in (wf.get("nodes") or {}).values():
+        if isinstance(n.get("tools"), list):
+            names = []
+            for t in n["tools"]:
+                nm = (t.get("function") or {}).get("name") if isinstance(t, dict) else t
+                if isinstance(t, dict):
+                    lib.setdefault(nm, t)
+                names.append(nm)
+            n["tools"] = names
+    wf["tool_library"] = lib
     return wf
 
 

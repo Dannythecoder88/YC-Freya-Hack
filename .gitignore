@@ -8,3 +8,4 @@ results/
 .personas.json
 .freya-agents.json
 .DS_Store
+briefs/hidden-*
